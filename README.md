@@ -64,7 +64,7 @@ It highlights equity by showing **Māori vs Non-Māori** counts and ratios, and 
 ![Ethnicity & Age](exports/screenshots/04_ethnicity_age.png)
 
 **Filtered Regional View (example)**
-![Filtered Regional](exports/screenshots/02_filtered_te-tai-hauāuru.png)
+![Filtered Regional](exports/screenshots/02_filtered_te-tai-hauauru.png)
 
 ---
 
