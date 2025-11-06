@@ -1,0 +1,16 @@
+# Power BI and local system files
+*.pbix
+*.xlsx
+*.csv
+*.json
+*.zip
+~$*
+
+# VS Code & Windows
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc

@@ -1,0 +1,231 @@
+# Power Query (M) Transformations
+
+This file includes Power Query ETL logic used to clean, reshape, and calculate fields for analysis.
+Key steps include age-group unpivoting, allocation of missing values, and normalisation for consistent
+regional and collective reporting.
+
+> Real program data used, fully anonymised to protect providers.
+
+## Bridge Combined
+let
+    // Source workbook (relative path for write-up)
+    Source = Excel.Workbook(File.Contents("DATA/Vaccination_Master_Data.xlsx"), null, true),
+
+    // Extract the Bridge_combined table as-is
+    Bridge_combined_Table = Source{[Item="Bridge_combined", Kind="Table"]}[Data]
+in
+    Bridge_combined_Table
+
+
+## INPUT_table
+let
+    Source = Excel.Workbook(File.Contents("DATA/Vaccination_Master_Data.xlsx"), null, true),
+    INPUT_table_Table = Source{[Item="INPUT_table", Kind="Table"]}[Data],
+
+    // Explicit column typing for stability
+    #"Typed Columns" =
+        Table.TransformColumnTypes(
+            INPUT_table_Table,
+            {
+                {"Partner_submitted", type text},
+                {"Partner Name", type text},
+                {"Vaccination Type", type text},
+                {"Vaccination Count", Int64.Type},
+                {"Pēpi (0-4)", Int64.Type},
+                {"Tamariki (5-12)", Int64.Type},
+                {"Rangatahi (13-17)", Int64.Type},
+                {"Pākeke (18-65)", Int64.Type},
+                {"Kaumatua (65+)", Int64.Type},
+                {"% Māori", type number},
+                {"Count Check (auto-calculates)", Int64.Type},
+                {"Total Māori (auto-calculates)", Int64.Type},
+                {"Partner_CLEAN", type text},
+                {"Collective_CLEAN", type text},
+                {"Region_CLEAN", type text},
+                {"Vaccination Type_CLEAN", type text},
+                {"Key", type text},
+                {"Quarter", type text},
+                {"Year", type text},
+                {"Comments", type text}
+            }
+        )
+in
+    #"Typed Columns"
+
+
+## KPI_combined
+let
+    Source = Excel.Workbook(File.Contents("DATA/Vaccination_Master_Data.xlsx"), null, true),
+    KPI_combined_Table = Source{[Item="KPI_combined", Kind="Table"]}[Data],
+
+    //"Typed Columns" for KPI metadata
+    #"Typed Columns" =
+        Table.TransformColumnTypes(
+            KPI_combined_Table,
+            {
+                {"Collective", type text},
+                {"KPI_#", Int64.Type},
+                {"Expected", Int64.Type},
+                {"Year", type text},
+                {"Key", type text}
+            }
+        )
+in
+    #"Typed Columns"
+
+
+## Address_table
+let
+    Source = Excel.Workbook(File.Contents("DATA/Vaccination_Master_Data.xlsx"), null, true),
+    Address_table_Table = Source{[Item="Address_table", Kind="Table"]}[Data]
+in
+    Address_table_Table
+
+
+## AgeGroupVisualTable
+let
+    Source = INPUT_table,
+
+    // Unpivot all age-band columns; keep structural and meta fields
+    #"Unpivot Age Columns" =
+        Table.UnpivotOtherColumns(
+            Source,
+            {
+                "Partner_submitted", "Partner Name", "Vaccination Type",
+                "Vaccination Count", "% Māori",
+                "Count Check (auto-calculates)", "Total Māori (auto-calculates)",
+                "Partner_CLEAN", "Collective_CLEAN", "Region_CLEAN",
+                "Vaccination Type_CLEAN", "Key", "Quarter", "Year", "Comments"
+            },
+            "Attribute",
+            "Value"
+        ),
+
+    // Rename to semantic fields for visuals
+    #"Renamed Columns" =
+        Table.RenameColumns(
+            #"Unpivot Age Columns",
+            {{"Attribute", "Age Group"}, {"Value", "Age Group Count"}}
+        ),
+
+    // Tag origin
+    #"Add RecordedSource Reported" =
+        Table.AddColumn(#"Renamed Columns", "RecordedSource", each "Reported")
+in
+    #"Add RecordedSource Reported"
+
+
+## MissingAgeGroupRows
+let
+    Source = INPUT_table,
+
+    // Replace null age-band entries with 0 to enable arithmetic
+    #"Replaced Nulls with Zero" =
+        Table.ReplaceValue(
+            Source, null, 0, Replacer.ReplaceValue,
+            {"Pēpi (0-4)", "Tamariki (5-12)", "Rangatahi (13-17)", "Pākeke (18-65)", "Kaumatua (65+)"}
+        ),
+
+    // Sum reported age groups
+    #"Add TotalReportedAge" =
+        Table.AddColumn(
+            #"Replaced Nulls with Zero",
+            "TotalReportedAge",
+            each [#"Pēpi (0-4)"] + [#"Tamariki (5-12)"] + [#"Rangatahi (13-17)"] + [#"Pākeke (18-65)"] + [#"Kaumatua (65+)"]
+        ),
+
+    // Compute gap between overall count and reported-by-age total
+    #"Add MissingCount" =
+        Table.AddColumn(
+            #"Add TotalReportedAge",
+            "MissingCount",
+            each [Vaccination Count] - [TotalReportedAge]
+        ),
+
+    // Keep only rows where there is a positive gap to impute
+    #"Filter Missing > 0" =
+        Table.SelectRows(#"Add MissingCount", each [MissingCount] > 0),
+
+    // Build imputed "Not Specified" records with counts = MissingCount
+    #"Add AgeGroup NotSpecified" =
+        Table.AddColumn(#"Filter Missing > 0", "Age Group", each "Not Specified"),
+    #"Add AgeGroupCount Missing" =
+        Table.AddColumn(#"Add AgeGroup NotSpecified", "Age Group Count", each [MissingCount]),
+    #"Add RecordedSource Imputed" =
+        Table.AddColumn(#"Add AgeGroupCount Missing", "RecordedSource", each "Imputed"),
+
+    // Remove fields not needed in the long format output
+    #"Drop Intermediate Columns" =
+        Table.RemoveColumns(
+            #"Add RecordedSource Imputed",
+            {
+                "TotalReportedAge", "MissingCount", "Comments", "Partner_submitted", "Partner Name",
+                "Pēpi (0-4)", "Tamariki (5-12)", "Rangatahi (13-17)", "Pākeke (18-65)", "Kaumatua (65+)",
+                "Vaccination Type"
+            }
+        )
+in
+    #"Drop Intermediate Columns"
+
+
+## Final_INPUT_Table
+let
+    // Combine the reported (unpivoted) and imputed age rows
+    Source = Table.Combine({AgeGroupVisualTable, MissingAgeGroupRows}),
+
+    // Ensure key columns are typed as expected
+    #"Typed Columns" =
+        Table.TransformColumnTypes(
+            Source,
+            {
+                {"Age Group Count", Int64.Type},
+                {"Age Group", type text},
+                {"RecordedSource", type text}
+            }
+        ),
+
+    // Remove columns not used downstream
+    #"Drop Unused Columns" =
+        Table.RemoveColumns(#"Typed Columns", {"Vaccination Count", "Count Check (auto-calculates)"}),
+
+    // Recalculate Māori totals at the long-row level
+    #"Add Māori_Total_CLEANED" =
+        Table.AddColumn(#"Drop Unused Columns", "Total Māori_CLEANED", each [#"% Māori"] * [Age Group Count]),
+
+    // Strip original calc/meta fields & PII-like fields for simplicity
+    #"Drop Source-only Columns" =
+        Table.RemoveColumns(
+            #"Add Māori_Total_CLEANED",
+            {"Total Māori (auto-calculates)", "Vaccination Type", "Partner_submitted", "Partner Name", "Comments"}
+        ),
+
+    // Set canonical column order for the model
+    #"Reorder Columns" =
+        Table.ReorderColumns(
+            #"Drop Source-only Columns",
+            {
+                "Partner_CLEAN", "Collective_CLEAN", "Region_CLEAN", "Vaccination Type_CLEAN",
+                "Key", "Quarter", "Year",
+                "Age Group", "Age Group Count", "RecordedSource", "% Māori", "Total Māori_CLEANED"
+            }
+        ),
+
+    // Round Māori totals up to whole numbers for final reporting
+    #"Round Māori Up" =
+        Table.AddColumn(#"Reorder Columns", "Round Up", each Number.RoundUp([Total Māori_CLEANED]), Int64.Type),
+
+    // Final renames to presentation fields
+    #"Rename Presentation Columns" =
+        Table.RenameColumns(
+            #"Round Māori Up",
+            {
+                {"Total Māori_CLEANED", "Total Māori"},
+                {"Round Up", "Total Māori_CLEANED"},
+                {"Age Group Count", "Vaccination Count"},
+                {"Collective_CLEAN", "Collective"},
+                {"Region_CLEAN", "Region"},
+                {"Partner_CLEAN", "Partner"}
+            }
+        )
+in
+    #"Rename Presentation Columns"
